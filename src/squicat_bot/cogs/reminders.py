@@ -38,9 +38,6 @@ class ReminderCog(commands.Cog):
     ) -> None:
         language = language_for(interaction.locale, self.bot.default_language)
         target_count = int(member is not None) + int(role is not None)
-        if target_count == 0:
-            await interaction.response.send_message(text(language, "missing_target"), ephemeral=True)
-            return
         if target_count > 1:
             await interaction.response.send_message(text(language, "too_many_targets"), ephemeral=True)
             return
@@ -56,11 +53,10 @@ class ReminderCog(commands.Cog):
             return
 
         type_key = f"type_{reminder_type.value}"
-        target = member.mention if member is not None else role.mention  # type: ignore[union-attr]
+        target = member.mention if member is not None else role.mention if role is not None else interaction.user.mention
         embed = discord.Embed(title=text(language, "preview_title"), colour=discord.Colour.teal())
         embed.add_field(name=text(language, "field_message"), value=message, inline=False)
         embed.add_field(name=text(language, "field_type"), value=text(language, type_key), inline=True)
-        embed.add_field(name=text(language, "field_target"), value=target, inline=True)
         if amount is not None:
             interval_key = {
                 ReminderType.IN_MINUTES: "in_minutes",
@@ -68,6 +64,7 @@ class ReminderCog(commands.Cog):
                 ReminderType.EVERY_HOURS: "every_hours",
             }[reminder_type]
             embed.add_field(name=text(language, "field_interval"), value=text(language, interval_key, amount=amount), inline=True)
+        embed.add_field(name=text(language, "field_target"), value=target, inline=True)
         embed.set_footer(text=text(language, "preview_notice"))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -75,10 +72,10 @@ class ReminderCog(commands.Cog):
     @app_commands.command(name="reminder", description="Create a reminder setup preview.")
     @app_commands.describe(
         message="What should Squicat remind them about?",
-        reminder_type="How often should the reminder repeat?",
-        member="One member to remind.",
-        role="One role to remind, including @everyone if permitted.",
-        amount="Required for in X minutes, in X hours, or every X hours.",
+        reminder_type="Choose when or how often to send the reminder.",
+        amount="Enter the number for in X minutes, in X hours, or every X hours.",
+        member="Optional. Leave blank to remind yourself; otherwise select one member.",
+        role="Optional. Leave blank to remind yourself; otherwise select one role, including @everyone if permitted.",
     )
     @app_commands.choices(
         reminder_type=[
@@ -96,9 +93,9 @@ class ReminderCog(commands.Cog):
         interaction: discord.Interaction,
         message: app_commands.Range[str, 1, 1000],
         reminder_type: app_commands.Choice[str],
+        amount: app_commands.Range[int, 1, 8760] | None = None,
         member: discord.Member | None = None,
         role: discord.Role | None = None,
-        amount: app_commands.Range[int, 1, 8760] | None = None,
     ) -> None:
         await self.create_preview(interaction, message, ReminderType(reminder_type.value), member, role, amount)
 
@@ -106,10 +103,10 @@ class ReminderCog(commands.Cog):
     @app_commands.command(name="提醒", description="建立提醒設定預覽。")
     @app_commands.describe(
         message="想提醒對方什麼？",
-        reminder_type="提醒要如何重複？",
-        member="一位要提醒的成員。",
-        role="一個要提醒的身分組；有權限時可選 @everyone。",
-        amount="「X 分鐘後」、「X 小時後」或「每 X 小時」才需要填寫。",
+        reminder_type="選擇提醒時間或重複方式。",
+        amount="選「X 分鐘後」、「X 小時後」或「每 X 小時」時，直接填入數字。",
+        member="選填；留空就提醒自己，否則選擇一位成員。",
+        role="選填；留空就提醒自己，否則選擇一個身分組；有權限時可選 @everyone。",
     )
     @app_commands.choices(
         reminder_type=[
@@ -127,8 +124,8 @@ class ReminderCog(commands.Cog):
         interaction: discord.Interaction,
         message: app_commands.Range[str, 1, 1000],
         reminder_type: app_commands.Choice[str],
+        amount: app_commands.Range[int, 1, 8760] | None = None,
         member: discord.Member | None = None,
         role: discord.Role | None = None,
-        amount: app_commands.Range[int, 1, 8760] | None = None,
     ) -> None:
         await self.create_preview(interaction, message, ReminderType(reminder_type.value), member, role, amount)
