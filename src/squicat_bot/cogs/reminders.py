@@ -1,0 +1,122 @@
+"""Initial reminder Slash Commands for v0.1.0."""
+
+from __future__ import annotations
+
+from enum import Enum
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+from squicat_bot.i18n import language_for, text
+
+
+class ReminderType(str, Enum):
+    ONCE = "once"
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+    EVERY_HOURS = "every_hours"
+
+
+class ReminderCog(commands.Cog):
+    """Validate reminder options before scheduling is introduced."""
+
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+
+    async def create_preview(
+        self,
+        interaction: discord.Interaction,
+        message: str,
+        reminder_type: ReminderType,
+        member: discord.Member | None,
+        role: discord.Role | None,
+        hours: app_commands.Range[int, 1, 8760] | None,
+    ) -> None:
+        language = language_for(interaction.locale, self.bot.default_language)
+        target_count = int(member is not None) + int(role is not None)
+        if target_count == 0:
+            await interaction.response.send_message(text(language, "missing_target"), ephemeral=True)
+            return
+        if target_count > 1:
+            await interaction.response.send_message(text(language, "too_many_targets"), ephemeral=True)
+            return
+        if role is not None and role.is_default() and not interaction.user.guild_permissions.mention_everyone:
+            await interaction.response.send_message(text(language, "everyone_denied"), ephemeral=True)
+            return
+        if reminder_type is ReminderType.EVERY_HOURS and hours is None:
+            await interaction.response.send_message(text(language, "hours_required"), ephemeral=True)
+            return
+        if reminder_type is not ReminderType.EVERY_HOURS and hours is not None:
+            await interaction.response.send_message(text(language, "hours_not_needed"), ephemeral=True)
+            return
+
+        type_key = f"type_{reminder_type.value}"
+        target = member.mention if member is not None else role.mention  # type: ignore[union-attr]
+        embed = discord.Embed(title=text(language, "preview_title"), colour=discord.Colour.teal())
+        embed.add_field(name=text(language, "field_message"), value=message, inline=False)
+        embed.add_field(name=text(language, "field_type"), value=text(language, type_key), inline=True)
+        embed.add_field(name=text(language, "field_target"), value=target, inline=True)
+        if hours is not None:
+            embed.add_field(name=text(language, "field_interval"), value=text(language, "hours", hours=hours), inline=True)
+        embed.set_footer(text=text(language, "preview_notice"))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.guild_only()
+    @app_commands.command(name="reminder", description="Create a reminder setup preview.")
+    @app_commands.describe(
+        message="What should Squicat remind them about?",
+        reminder_type="How often should the reminder repeat?",
+        member="One member to remind.",
+        role="One role to remind, including @everyone if permitted.",
+        hours="Required only for every X hours.",
+    )
+    @app_commands.choices(
+        reminder_type=[
+            app_commands.Choice(name="Once", value=ReminderType.ONCE.value),
+            app_commands.Choice(name="Daily", value=ReminderType.DAILY.value),
+            app_commands.Choice(name="Weekly", value=ReminderType.WEEKLY.value),
+            app_commands.Choice(name="Monthly", value=ReminderType.MONTHLY.value),
+            app_commands.Choice(name="Every X hours", value=ReminderType.EVERY_HOURS.value),
+        ]
+    )
+    async def reminder(
+        self,
+        interaction: discord.Interaction,
+        message: app_commands.Range[str, 1, 1000],
+        reminder_type: app_commands.Choice[str],
+        member: discord.Member | None = None,
+        role: discord.Role | None = None,
+        hours: app_commands.Range[int, 1, 8760] | None = None,
+    ) -> None:
+        await self.create_preview(interaction, message, ReminderType(reminder_type.value), member, role, hours)
+
+    @app_commands.guild_only()
+    @app_commands.command(name="提醒", description="建立提醒設定預覽。")
+    @app_commands.describe(
+        message="想提醒對方什麼？",
+        reminder_type="提醒要如何重複？",
+        member="一位要提醒的成員。",
+        role="一個要提醒的身分組；有權限時可選 @everyone。",
+        hours="只有「每 X 小時」需要填寫。",
+    )
+    @app_commands.choices(
+        reminder_type=[
+            app_commands.Choice(name="一次", value=ReminderType.ONCE.value),
+            app_commands.Choice(name="每天", value=ReminderType.DAILY.value),
+            app_commands.Choice(name="每星期", value=ReminderType.WEEKLY.value),
+            app_commands.Choice(name="每月", value=ReminderType.MONTHLY.value),
+            app_commands.Choice(name="每 X 小時", value=ReminderType.EVERY_HOURS.value),
+        ]
+    )
+    async def reminder_chinese(
+        self,
+        interaction: discord.Interaction,
+        message: app_commands.Range[str, 1, 1000],
+        reminder_type: app_commands.Choice[str],
+        member: discord.Member | None = None,
+        role: discord.Role | None = None,
+        hours: app_commands.Range[int, 1, 8760] | None = None,
+    ) -> None:
+        await self.create_preview(interaction, message, ReminderType(reminder_type.value), member, role, hours)
