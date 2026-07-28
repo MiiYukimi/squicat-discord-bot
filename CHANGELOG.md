@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Add one-time reminder preview options for `X 分鐘後` / `X 小時後` and their English equivalents.
+
 All notable changes to this project will be documented in this file.
 
 ## [0.1.0] - 2026-07-28
