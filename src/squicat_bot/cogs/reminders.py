@@ -13,6 +13,8 @@ from squicat_bot.i18n import language_for, text
 
 class ReminderType(str, Enum):
     ONCE = "once"
+    IN_MINUTES = "in_minutes"
+    IN_HOURS = "in_hours"
     DAILY = "daily"
     WEEKLY = "weekly"
     MONTHLY = "monthly"
@@ -32,7 +34,7 @@ class ReminderCog(commands.Cog):
         reminder_type: ReminderType,
         member: discord.Member | None,
         role: discord.Role | None,
-        hours: app_commands.Range[int, 1, 8760] | None,
+        amount: app_commands.Range[int, 1, 8760] | None,
     ) -> None:
         language = language_for(interaction.locale, self.bot.default_language)
         target_count = int(member is not None) + int(role is not None)
@@ -45,11 +47,12 @@ class ReminderCog(commands.Cog):
         if role is not None and role.is_default() and not interaction.user.guild_permissions.mention_everyone:
             await interaction.response.send_message(text(language, "everyone_denied"), ephemeral=True)
             return
-        if reminder_type is ReminderType.EVERY_HOURS and hours is None:
-            await interaction.response.send_message(text(language, "hours_required"), ephemeral=True)
+        timed_types = {ReminderType.IN_MINUTES, ReminderType.IN_HOURS, ReminderType.EVERY_HOURS}
+        if reminder_type in timed_types and amount is None:
+            await interaction.response.send_message(text(language, "amount_required"), ephemeral=True)
             return
-        if reminder_type is not ReminderType.EVERY_HOURS and hours is not None:
-            await interaction.response.send_message(text(language, "hours_not_needed"), ephemeral=True)
+        if reminder_type not in timed_types and amount is not None:
+            await interaction.response.send_message(text(language, "amount_not_needed"), ephemeral=True)
             return
 
         type_key = f"type_{reminder_type.value}"
@@ -58,8 +61,13 @@ class ReminderCog(commands.Cog):
         embed.add_field(name=text(language, "field_message"), value=message, inline=False)
         embed.add_field(name=text(language, "field_type"), value=text(language, type_key), inline=True)
         embed.add_field(name=text(language, "field_target"), value=target, inline=True)
-        if hours is not None:
-            embed.add_field(name=text(language, "field_interval"), value=text(language, "hours", hours=hours), inline=True)
+        if amount is not None:
+            interval_key = {
+                ReminderType.IN_MINUTES: "in_minutes",
+                ReminderType.IN_HOURS: "in_hours",
+                ReminderType.EVERY_HOURS: "every_hours",
+            }[reminder_type]
+            embed.add_field(name=text(language, "field_interval"), value=text(language, interval_key, amount=amount), inline=True)
         embed.set_footer(text=text(language, "preview_notice"))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -70,11 +78,13 @@ class ReminderCog(commands.Cog):
         reminder_type="How often should the reminder repeat?",
         member="One member to remind.",
         role="One role to remind, including @everyone if permitted.",
-        hours="Required only for every X hours.",
+        amount="Required for in X minutes, in X hours, or every X hours.",
     )
     @app_commands.choices(
         reminder_type=[
             app_commands.Choice(name="Once", value=ReminderType.ONCE.value),
+            app_commands.Choice(name="In X minutes (once)", value=ReminderType.IN_MINUTES.value),
+            app_commands.Choice(name="In X hours (once)", value=ReminderType.IN_HOURS.value),
             app_commands.Choice(name="Daily", value=ReminderType.DAILY.value),
             app_commands.Choice(name="Weekly", value=ReminderType.WEEKLY.value),
             app_commands.Choice(name="Monthly", value=ReminderType.MONTHLY.value),
@@ -88,9 +98,9 @@ class ReminderCog(commands.Cog):
         reminder_type: app_commands.Choice[str],
         member: discord.Member | None = None,
         role: discord.Role | None = None,
-        hours: app_commands.Range[int, 1, 8760] | None = None,
+        amount: app_commands.Range[int, 1, 8760] | None = None,
     ) -> None:
-        await self.create_preview(interaction, message, ReminderType(reminder_type.value), member, role, hours)
+        await self.create_preview(interaction, message, ReminderType(reminder_type.value), member, role, amount)
 
     @app_commands.guild_only()
     @app_commands.command(name="提醒", description="建立提醒設定預覽。")
@@ -99,11 +109,13 @@ class ReminderCog(commands.Cog):
         reminder_type="提醒要如何重複？",
         member="一位要提醒的成員。",
         role="一個要提醒的身分組；有權限時可選 @everyone。",
-        hours="只有「每 X 小時」需要填寫。",
+        amount="「X 分鐘後」、「X 小時後」或「每 X 小時」才需要填寫。",
     )
     @app_commands.choices(
         reminder_type=[
             app_commands.Choice(name="一次", value=ReminderType.ONCE.value),
+            app_commands.Choice(name="X 分鐘後（一次）", value=ReminderType.IN_MINUTES.value),
+            app_commands.Choice(name="X 小時後（一次）", value=ReminderType.IN_HOURS.value),
             app_commands.Choice(name="每天", value=ReminderType.DAILY.value),
             app_commands.Choice(name="每星期", value=ReminderType.WEEKLY.value),
             app_commands.Choice(name="每月", value=ReminderType.MONTHLY.value),
@@ -117,6 +129,6 @@ class ReminderCog(commands.Cog):
         reminder_type: app_commands.Choice[str],
         member: discord.Member | None = None,
         role: discord.Role | None = None,
-        hours: app_commands.Range[int, 1, 8760] | None = None,
+        amount: app_commands.Range[int, 1, 8760] | None = None,
     ) -> None:
-        await self.create_preview(interaction, message, ReminderType(reminder_type.value), member, role, hours)
+        await self.create_preview(interaction, message, ReminderType(reminder_type.value), member, role, amount)
