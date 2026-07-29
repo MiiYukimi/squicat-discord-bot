@@ -159,9 +159,6 @@ class ReminderCog(commands.Cog):
         if not isinstance(channel, discord.abc.Messageable):
             return
         guild = self.bot.get_guild(reminder["guild_id"])
-        # A guild member may not be in discord.py's cache after a Railway
-        # restart.  Raw Discord mention syntax is stable and still pings the
-        # original ID, so do not treat a cache miss as a missing recipient.
         target = (
             f"<@&{reminder['target_id']}>"
             if reminder["target_type"] == "role"
@@ -199,6 +196,81 @@ class ReminderCog(commands.Cog):
             self.connection.execute("UPDATE reminders SET next_run_at = ? WHERE id = ?", (new_next.isoformat(), reminder["id"]))
         self.connection.commit()
 
+    @staticmethod
+    def _target_mention(reminder: sqlite3.Row) -> str:
+        if reminder["target_type"] == "role":
+            return f"<@&{reminder['target_id']}>"
+        return f"<@{reminder['target_id']}>"
+
+    @staticmethod
+    def _short_message(value: str, limit: int = 100) -> str:
+        compact = " ".join(value.split())
+        return compact if len(compact) <= limit else f"{compact[:limit - 1]}…"
+
+    @staticmethod
+    def _remaining_time(next_run_at: str, language: str) -> str:
+        seconds = max(0, int((datetime.fromisoformat(next_run_at) - datetime.now(UTC)).total_seconds()))
+        days, seconds = divmod(seconds, 86_400)
+        hours, seconds = divmod(seconds, 3_600)
+        minutes = (seconds + 59) // 60
+        if language == "zh":
+            parts = [f"{days} 天" if days else "", f"{hours} 小時" if hours else "", f"{minutes} 分鐘" if minutes else ""]
+            return " ".join(part for part in parts if part) or "不到 1 分鐘"
+        parts = [f"{days}d" if days else "", f"{hours}h" if hours else "", f"{minutes}m" if minutes else ""]
+        return " ".join(part for part in parts if part) or "under 1m"
+
+    def _schedule_value(self, reminder: sqlite3.Row, language: str) -> str:
+        if reminder["schedule_type"] == "once":
+            return text(language, "once_after", duration=self._remaining_time(reminder["next_run_at"], language))
+        return text(language, reminder["schedule_type"], amount=reminder["schedule_amount"])
+
+    async def list_reminders(self, interaction: discord.Interaction) -> None:
+        language = language_for(interaction.locale, self.bot.default_language)
+        rows = self.connection.execute(
+            """SELECT * FROM reminders WHERE creator_id = ? AND next_run_at > ?
+               ORDER BY next_run_at ASC LIMIT 10""",
+            (interaction.user.id, datetime.now(UTC).isoformat()),
+        ).fetchall()
+        if not rows:
+            await interaction.response.send_message(text(language, "list_empty"), ephemeral=True)
+            return
+
+        embed = discord.Embed(title=text(language, "list_title"), colour=discord.Colour.teal())
+        embed.description = "
+
+".join(
+            text(
+                language,
+                "list_item",
+                id=row["id"],
+                message=self._short_message(row["message"]),
+                remaining=self._remaining_time(row["next_run_at"], language),
+                schedule=self._schedule_value(row, language),
+                target=self._target_mention(row),
+                channel=f"<#{row['channel_id']}>",
+            )
+            for row in rows
+        )
+        embed.set_footer(text=text(language, "list_footer"))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def stop_repeating_reminder(self, interaction: discord.Interaction, reminder_id: int) -> None:
+        language = language_for(interaction.locale, self.bot.default_language)
+        reminder = self.connection.execute(
+            "SELECT * FROM reminders WHERE id = ? AND creator_id = ?", (reminder_id, interaction.user.id)
+        ).fetchone()
+        if reminder is None:
+            await interaction.response.send_message(text(language, "cancel_not_found"), ephemeral=True)
+            return
+        if reminder["schedule_type"] == "once":
+            await interaction.response.send_message(text(language, "cancel_once", id=reminder_id), ephemeral=True)
+            return
+        self.connection.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+        self.connection.commit()
+        embed = discord.Embed(title=text(language, "cancelled_title"), colour=discord.Colour.teal())
+        embed.description = text(language, "cancelled_message", id=reminder_id, message=self._short_message(reminder["message"]))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @app_commands.guild_only()
     @app_commands.command(name="reminder", description="Create and send a reminder.")
     @app_commands.describe(message="What should Squicat remind them about?", once="Once only, e.g. 5h30m.", every_hours="Repeat every X hours.", every_days="Repeat every X days.", every_months="Repeat every X months.", member="Optional member; leave blank for yourself.", role="Optional role; leave blank for yourself.", post_channel="Optional channel to post the reminder in; leave blank for this channel.")
@@ -211,3 +283,26 @@ class ReminderCog(commands.Cog):
     @app_commands.describe(message="想提醒對方什麼？", once="一次提醒；填寫時間，例如 5h30m。", every_hours="每 X 小時提醒一次；直接填 X。", every_days="每 X 天提醒一次；直接填 X。", every_months="每 X 個月提醒一次；直接填 X。", member="選填；留空就提醒自己，否則選擇一位成員。", role="選填；留空就提醒自己，否則選擇一個身分組；有權限時可選 @everyone。", post_channel="選填；指定提醒要發佈的文字頻道，留空就是目前頻道。")
     async def reminder_chinese(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 1000], once: str | None = None, every_hours: app_commands.Range[int, 1, 8760] | None = None, every_days: app_commands.Range[int, 1, 8760] | None = None, every_months: app_commands.Range[int, 1, 8760] | None = None, member: discord.Member | None = None, role: discord.Role | None = None, post_channel: discord.TextChannel | None = None) -> None:
         await self.create_reminder(interaction, message, once, every_hours, every_days, every_months, member, role, post_channel)
+
+    @app_commands.guild_only()
+    @app_commands.command(name="reminders", description="View your active and scheduled reminders.")
+    async def reminders(self, interaction: discord.Interaction) -> None:
+        await self.list_reminders(interaction)
+
+    @app_commands.guild_only()
+    @app_commands.command(name="提醒列表", description="查看你目前進行中與排程中的提醒。")
+    async def reminders_chinese(self, interaction: discord.Interaction) -> None:
+        await self.list_reminders(interaction)
+
+    @app_commands.guild_only()
+    @app_commands.command(name="stop_reminder", description="Stop one of your repeating reminders using its ID.")
+    @app_commands.describe(reminder_id="The reminder ID shown in /reminders.")
+    async def stop_reminder(self, interaction: discord.Interaction, reminder_id: app_commands.Range[int, 1]) -> None:
+        await self.stop_repeating_reminder(interaction, reminder_id)
+
+    @app_commands.guild_only()
+    @app_commands.command(name="停止提醒", description="使用編號停止你設定的重複提醒。")
+    @app_commands.rename(reminder_id="提醒編號")
+    @app_commands.describe(reminder_id="在 /提醒列表 顯示的提醒編號。")
+    async def stop_reminder_chinese(self, interaction: discord.Interaction, reminder_id: app_commands.Range[int, 1]) -> None:
+        await self.stop_repeating_reminder(interaction, reminder_id)
