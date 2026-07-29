@@ -11,7 +11,7 @@ Squicat is a bilingual Chinese/English Discord reminder bot. Version 0.1.0 provi
 - A reminder defaults to its creator when no target is selected. Optionally, it can target exactly one member or one role.
 - `@Role` is supported.
 - `@everyone` is accepted only when the command user already has Discord's **Mention @everyone, @here, and All Roles** permission.
-- Supported reminder types prepared for the next phase: once, in X minutes, in X hours, daily, weekly, monthly, every X hours.
+- Supported reminder types prepared for the next phase: once after a duration, every X hours, every X days, and every X months.
 - No snooze button and no completion button.
 
 > The v0.1.0 command only validates and previews a reminder. It deliberately does **not** send real reminders yet, so no one receives accidental notifications while the schedule database is still being built.
@@ -59,7 +59,7 @@ For quick testing, add your test server's numeric ID to `DEV_GUILD_ID`. Otherwis
 | `/提醒` | Traditional Chinese entry point for creating a reminder preview. |
 | `/reminder` | English entry point for creating a reminder preview. |
 
-Both commands follow this order: reminder text, reminder time/type, an `amount` for `in X minutes`, `in X hours`, or `every X hours`, then an optional target member or role. If both target fields are blank, the reminder is for the person who created it.
+Both commands follow this order: reminder text, then one timing option, then an optional target member or role. Fill in **exactly one** timing option: `once` (a duration such as `5h30m`), `every_hours`, `every_days`, or `every_months`. If both target fields are blank, the reminder is for the person who created it.
 
 ## Project layout
 
