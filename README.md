@@ -2,7 +2,7 @@
 
 松鼠小貓是一個中英雙語 Discord 提醒 Bot。建立提醒後會公開確認，並在時間到時於原頻道 @ 指定對象。
 
-Squicat is a bilingual Chinese/English Discord reminder bot. It publicly confirms reminders and mentions the selected target in the original channel when due.
+Squicat is a bilingual Chinese/English Discord reminder bot. It publicly confirms reminders and mentions the selected target when due, either in the current channel or a chosen text channel.
 
 ## v0.1.0 capabilities
 
@@ -60,7 +60,7 @@ For quick testing, add your test server's numeric ID to `DEV_GUILD_ID`. Otherwis
 | `/提醒` | Traditional Chinese entry point for creating and sending reminders. |
 | `/reminder` | English entry point for creating and sending reminders. |
 
-Both commands follow this order: reminder text, then one timing option, then an optional target member or role. Fill in **exactly one** timing option: `once` (a duration such as `5h30m`), `every_hours`, `every_days`, or `every_months`. If both target fields are blank, the reminder is for the person who created it.
+Both commands follow this order: reminder text, then one timing option, then an optional target member or role, then an optional posting channel. Fill in **exactly one** timing option: `once` (a duration such as `5h30m`), `every_hours`, `every_days`, or `every_months`. If both target fields are blank, the reminder is for the person who created it. If the posting channel is blank, the reminder is posted in the channel where the command was used.
 
 ## Project layout
 
