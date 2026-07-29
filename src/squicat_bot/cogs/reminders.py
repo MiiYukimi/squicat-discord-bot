@@ -159,6 +159,9 @@ class ReminderCog(commands.Cog):
         if not isinstance(channel, discord.abc.Messageable):
             return
         guild = self.bot.get_guild(reminder["guild_id"])
+        # A guild member may not be in discord.py's cache after a Railway
+        # restart.  Raw Discord mention syntax is stable and still pings the
+        # original ID, so do not treat a cache miss as a missing recipient.
         target = (
             f"<@&{reminder['target_id']}>"
             if reminder["target_type"] == "role"
@@ -198,17 +201,20 @@ class ReminderCog(commands.Cog):
 
     @staticmethod
     def _target_mention(reminder: sqlite3.Row) -> str:
+        """Return a stable Discord mention without relying on the member cache."""
         if reminder["target_type"] == "role":
             return f"<@&{reminder['target_id']}>"
         return f"<@{reminder['target_id']}>"
 
     @staticmethod
     def _short_message(value: str, limit: int = 100) -> str:
+        """Keep a list entry readable while preserving the original reminder."""
         compact = " ".join(value.split())
         return compact if len(compact) <= limit else f"{compact[:limit - 1]}…"
 
     @staticmethod
     def _remaining_time(next_run_at: str, language: str) -> str:
+        """Format the delay until the next delivery in the user's language."""
         seconds = max(0, int((datetime.fromisoformat(next_run_at) - datetime.now(UTC)).total_seconds()))
         days, seconds = divmod(seconds, 86_400)
         hours, seconds = divmod(seconds, 3_600)
@@ -225,6 +231,7 @@ class ReminderCog(commands.Cog):
         return text(language, reminder["schedule_type"], amount=reminder["schedule_amount"])
 
     async def list_reminders(self, interaction: discord.Interaction) -> None:
+        """Show the invoking user's pending reminders without exposing them publicly."""
         language = language_for(interaction.locale, self.bot.default_language)
         rows = self.connection.execute(
             """SELECT * FROM reminders WHERE creator_id = ? AND next_run_at > ?
@@ -236,9 +243,7 @@ class ReminderCog(commands.Cog):
             return
 
         embed = discord.Embed(title=text(language, "list_title"), colour=discord.Colour.teal())
-        embed.description = "
-
-".join(
+        embed.description = "\n\n".join(
             text(
                 language,
                 "list_item",
@@ -255,6 +260,7 @@ class ReminderCog(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def stop_repeating_reminder(self, interaction: discord.Interaction, reminder_id: int) -> None:
+        """Stop only a repeating reminder created by the invoking user."""
         language = language_for(interaction.locale, self.bot.default_language)
         reminder = self.connection.execute(
             "SELECT * FROM reminders WHERE id = ? AND creator_id = ?", (reminder_id, interaction.user.id)
