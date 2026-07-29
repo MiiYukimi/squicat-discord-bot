@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0] - 2026-07-29
+
+### Added
+
+- Public confirmation when a reminder is created.
+- Actual reminder delivery in the original channel, including the selected member or role mention.
+- SQLite reminder storage and a Railway Volume configuration option.
+
 ## [Unreleased]
 
 - Replace the type picker and `amount` field with four direct timing fields: once (`5h30m`), every X hours, every X days, or every X months.
