@@ -168,7 +168,11 @@ class ReminderCog(commands.Cog):
             else f"<@{reminder['target_id']}>"
         )
         language = reminder["language"]
-        embed = discord.Embed(title=text(language, "delivery_title"), description=reminder["message"], colour=discord.Colour.orange())
+        embed = discord.Embed(
+            title=text(language, "delivery_title"),
+            description=reminder["message"],
+            colour=discord.Colour(0xFFED8D),
+        )
         creator_name = reminder["creator_name"]
         if not creator_name and guild is not None:
             creator = guild.get_member(reminder["creator_id"])
