@@ -2,7 +2,8 @@
 
 ## [Unreleased]
 
-- Add one-time reminder preview options for `X 分鐘後` / `X 小時後` and their English equivalents.
+- Replace the type picker and `amount` field with four direct timing fields: once (`5h30m`), every X hours, every X days, or every X months.
+- Validate that each reminder has exactly one timing field.
 
 All notable changes to this project will be documented in this file.
 
