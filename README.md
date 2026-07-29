@@ -1,8 +1,8 @@
 # 松鼠小貓 Discord Bot / Squicat Discord Bot
 
-松鼠小貓是一個中英雙語 Discord 提醒 Bot。v0.1.0 先提供安全的 Slash Command 骨架與提醒設定預覽；真正的排程、資料儲存與通知將在下一版本加入。
+松鼠小貓是一個中英雙語 Discord 提醒 Bot。建立提醒後會公開確認，並在時間到時於原頻道 @ 指定對象。
 
-Squicat is a bilingual Chinese/English Discord reminder bot. Version 0.1.0 provides a safe Slash Command foundation and reminder setup preview. Persistent schedules and delivery will be added next.
+Squicat is a bilingual Chinese/English Discord reminder bot. It publicly confirms reminders and mentions the selected target in the original channel when due.
 
 ## v0.1.0 capabilities
 
@@ -11,10 +11,11 @@ Squicat is a bilingual Chinese/English Discord reminder bot. Version 0.1.0 provi
 - A reminder defaults to its creator when no target is selected. Optionally, it can target exactly one member or one role.
 - `@Role` is supported.
 - `@everyone` is accepted only when the command user already has Discord's **Mention @everyone, @here, and All Roles** permission.
-- Supported reminder types prepared for the next phase: once after a duration, every X hours, every X days, and every X months.
+- Real reminders: once after a duration, every X hours, every X days, and every X months.
+- SQLite persistence, so reminders survive Bot restarts when the database is stored on persistent disk.
 - No snooze button and no completion button.
 
-> The v0.1.0 command only validates and previews a reminder. It deliberately does **not** send real reminders yet, so no one receives accidental notifications while the schedule database is still being built.
+> On Railway, attach a **Volume** mounted at `/app/data`, then set `DATABASE_PATH=/app/data/reminders.db`. Without a Volume, reminders can be lost if Railway redeploys or restarts the service.
 
 ## Setup
 
@@ -56,8 +57,8 @@ For quick testing, add your test server's numeric ID to `DEV_GUILD_ID`. Otherwis
 
 | Command | What it does |
 | --- | --- |
-| `/提醒` | Traditional Chinese entry point for creating a reminder preview. |
-| `/reminder` | English entry point for creating a reminder preview. |
+| `/提醒` | Traditional Chinese entry point for creating and sending reminders. |
+| `/reminder` | English entry point for creating and sending reminders. |
 
 Both commands follow this order: reminder text, then one timing option, then an optional target member or role. Fill in **exactly one** timing option: `once` (a duration such as `5h30m`), `every_hours`, `every_days`, or `every_months`. If both target fields are blank, the reminder is for the person who created it.
 
