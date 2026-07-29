@@ -21,6 +21,9 @@ class SquicatBot(commands.Bot):
 
     def __init__(self) -> None:
         intents = discord.Intents.default()
+        # Reminder recipients are looked up again after a restart.  This must
+        # match the Server Members Intent enabled in the Developer Portal.
+        intents.members = True
         super().__init__(command_prefix="!", intents=intents)
         self.default_language = language_for(os.getenv("BOT_DEFAULT_LANGUAGE", "zh-TW"))
         self.database_path = os.getenv("DATABASE_PATH", "data/reminders.db")
