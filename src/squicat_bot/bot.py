@@ -23,6 +23,7 @@ class SquicatBot(commands.Bot):
         intents = discord.Intents.default()
         super().__init__(command_prefix="!", intents=intents)
         self.default_language = language_for(os.getenv("BOT_DEFAULT_LANGUAGE", "zh-TW"))
+        self.database_path = os.getenv("DATABASE_PATH", "data/reminders.db")
         raw_guild_id = os.getenv("DEV_GUILD_ID", "").strip()
         self.dev_guild_id = int(raw_guild_id) if raw_guild_id.isdigit() else None
 
