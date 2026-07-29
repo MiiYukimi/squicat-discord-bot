@@ -31,9 +31,12 @@ class ReminderCog(commands.Cog):
                 id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL,
                 creator_id INTEGER NOT NULL, target_type TEXT NOT NULL, target_id INTEGER NOT NULL,
                 message TEXT NOT NULL, schedule_type TEXT NOT NULL, schedule_amount INTEGER NOT NULL,
-                next_run_at TEXT NOT NULL, language TEXT NOT NULL
+                next_run_at TEXT NOT NULL, language TEXT NOT NULL, creator_name TEXT
             )"""
         )
+        columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(reminders)")}
+        if "creator_name" not in columns:
+            self.connection.execute("ALTER TABLE reminders ADD COLUMN creator_name TEXT")
         self.connection.commit()
         self.deliver_due_reminders.start()
 
@@ -45,6 +48,7 @@ class ReminderCog(commands.Cog):
         self, interaction: discord.Interaction, message: str, once: str | None,
         every_hours: int | None, every_days: int | None, every_months: int | None,
         member: discord.Member | None, role: discord.Role | None,
+        post_channel: discord.TextChannel | None,
     ) -> None:
         language = language_for(interaction.locale, self.bot.default_language)
         if int(member is not None) + int(role is not None) > 1:
@@ -60,6 +64,15 @@ class ReminderCog(commands.Cog):
             return
         if count > 1:
             await interaction.response.send_message(text(language, "only_one_schedule"), ephemeral=True)
+            return
+
+        destination = post_channel or interaction.channel
+        if not isinstance(destination, discord.TextChannel):
+            await interaction.response.send_message(text(language, "channel_unavailable"), ephemeral=True)
+            return
+        permissions = destination.permissions_for(interaction.guild.me) if interaction.guild else None
+        if permissions is None or not permissions.view_channel or not permissions.send_messages:
+            await interaction.response.send_message(text(language, "channel_unavailable"), ephemeral=True)
             return
 
         if once is not None:
@@ -85,9 +98,9 @@ class ReminderCog(commands.Cog):
         next_run = self.next_run(schedule_key, schedule_amount)
         self.connection.execute(
             """INSERT INTO reminders (guild_id, channel_id, creator_id, target_type, target_id, message,
-               schedule_type, schedule_amount, next_run_at, language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (interaction.guild_id, interaction.channel_id, interaction.user.id, target_type, target_id, message,
-             schedule_key, schedule_amount, next_run.isoformat(), language),
+               schedule_type, schedule_amount, next_run_at, language, creator_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (interaction.guild_id, destination.id, interaction.user.id, target_type, target_id, message,
+             schedule_key, schedule_amount, next_run.isoformat(), language, interaction.user.display_name),
         )
         self.connection.commit()
 
@@ -96,6 +109,7 @@ class ReminderCog(commands.Cog):
         embed.add_field(name=text(language, "field_type"), value=text(language, f"type_{schedule_key}"), inline=True)
         embed.add_field(name=text(language, "field_interval"), value=schedule_value, inline=True)
         embed.add_field(name=text(language, "field_target"), value=target, inline=True)
+        embed.add_field(name=text(language, "field_channel"), value=destination.mention, inline=True)
         embed.set_footer(text=text(language, "scheduled_notice"))
         await interaction.response.send_message(embed=embed)
 
@@ -145,20 +159,32 @@ class ReminderCog(commands.Cog):
         if not isinstance(channel, discord.abc.Messageable):
             return
         guild = self.bot.get_guild(reminder["guild_id"])
-        target = None
-        if guild is not None:
-            if reminder["target_type"] == "role":
-                role = guild.get_role(reminder["target_id"])
-                target = role.mention if role else None
-            else:
-                member = guild.get_member(reminder["target_id"])
-                target = member.mention if member else None
+        # A guild member may not be in discord.py's cache after a Railway
+        # restart.  Raw Discord mention syntax is stable and still pings the
+        # original ID, so do not treat a cache miss as a missing recipient.
+        target = (
+            f"<@&{reminder['target_id']}>"
+            if reminder["target_type"] == "role"
+            else f"<@{reminder['target_id']}>"
+        )
         language = reminder["language"]
         embed = discord.Embed(title=text(language, "delivery_title"), description=reminder["message"], colour=discord.Colour.orange())
-        creator = guild.get_member(reminder["creator_id"]) if guild else None
-        embed.set_footer(text=text(language, "delivery_footer", creator=creator.display_name if creator else "Unknown"))
+        creator_name = reminder["creator_name"]
+        if not creator_name and guild is not None:
+            creator = guild.get_member(reminder["creator_id"])
+            if creator is None:
+                try:
+                    creator = await guild.fetch_member(reminder["creator_id"])
+                except discord.HTTPException:
+                    creator = None
+            creator_name = creator.display_name if creator else "Unknown"
+        embed.set_footer(text=text(language, "delivery_footer", creator=creator_name or "Unknown"))
         try:
-            await channel.send(content=target or text(language, "delivery_unavailable"), embed=embed)
+            await channel.send(
+                content=target,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=True),
+            )
         except discord.HTTPException:
             return
         if reminder["schedule_type"] == "once":
@@ -171,13 +197,13 @@ class ReminderCog(commands.Cog):
 
     @app_commands.guild_only()
     @app_commands.command(name="reminder", description="Create and send a reminder.")
-    @app_commands.describe(message="What should Squicat remind them about?", once="Once only, e.g. 5h30m.", every_hours="Repeat every X hours.", every_days="Repeat every X days.", every_months="Repeat every X months.", member="Optional member; leave blank for yourself.", role="Optional role; leave blank for yourself.")
-    async def reminder(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 1000], once: str | None = None, every_hours: app_commands.Range[int, 1, 8760] | None = None, every_days: app_commands.Range[int, 1, 8760] | None = None, every_months: app_commands.Range[int, 1, 8760] | None = None, member: discord.Member | None = None, role: discord.Role | None = None) -> None:
-        await self.create_reminder(interaction, message, once, every_hours, every_days, every_months, member, role)
+    @app_commands.describe(message="What should Squicat remind them about?", once="Once only, e.g. 5h30m.", every_hours="Repeat every X hours.", every_days="Repeat every X days.", every_months="Repeat every X months.", member="Optional member; leave blank for yourself.", role="Optional role; leave blank for yourself.", post_channel="Optional channel to post the reminder in; leave blank for this channel.")
+    async def reminder(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 1000], once: str | None = None, every_hours: app_commands.Range[int, 1, 8760] | None = None, every_days: app_commands.Range[int, 1, 8760] | None = None, every_months: app_commands.Range[int, 1, 8760] | None = None, member: discord.Member | None = None, role: discord.Role | None = None, post_channel: discord.TextChannel | None = None) -> None:
+        await self.create_reminder(interaction, message, once, every_hours, every_days, every_months, member, role, post_channel)
 
     @app_commands.guild_only()
     @app_commands.command(name="提醒", description="建立並送出提醒。")
-    @app_commands.rename(once="一次", every_hours="每x小時", every_days="每x天", every_months="每x個月")
-    @app_commands.describe(message="想提醒對方什麼？", once="一次提醒；填寫時間，例如 5h30m。", every_hours="每 X 小時提醒一次；直接填 X。", every_days="每 X 天提醒一次；直接填 X。", every_months="每 X 個月提醒一次；直接填 X。", member="選填；留空就提醒自己，否則選擇一位成員。", role="選填；留空就提醒自己，否則選擇一個身分組；有權限時可選 @everyone。")
-    async def reminder_chinese(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 1000], once: str | None = None, every_hours: app_commands.Range[int, 1, 8760] | None = None, every_days: app_commands.Range[int, 1, 8760] | None = None, every_months: app_commands.Range[int, 1, 8760] | None = None, member: discord.Member | None = None, role: discord.Role | None = None) -> None:
-        await self.create_reminder(interaction, message, once, every_hours, every_days, every_months, member, role)
+    @app_commands.rename(once="一次", every_hours="每x小時", every_days="每x天", every_months="每x個月", post_channel="發佈頻道")
+    @app_commands.describe(message="想提醒對方什麼？", once="一次提醒；填寫時間，例如 5h30m。", every_hours="每 X 小時提醒一次；直接填 X。", every_days="每 X 天提醒一次；直接填 X。", every_months="每 X 個月提醒一次；直接填 X。", member="選填；留空就提醒自己，否則選擇一位成員。", role="選填；留空就提醒自己，否則選擇一個身分組；有權限時可選 @everyone。", post_channel="選填；指定提醒要發佈的文字頻道，留空就是目前頻道。")
+    async def reminder_chinese(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 1000], once: str | None = None, every_hours: app_commands.Range[int, 1, 8760] | None = None, every_days: app_commands.Range[int, 1, 8760] | None = None, every_months: app_commands.Range[int, 1, 8760] | None = None, member: discord.Member | None = None, role: discord.Role | None = None, post_channel: discord.TextChannel | None = None) -> None:
+        await self.create_reminder(interaction, message, once, every_hours, every_days, every_months, member, role, post_channel)
