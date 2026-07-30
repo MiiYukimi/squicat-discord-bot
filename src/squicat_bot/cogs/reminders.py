@@ -7,6 +7,7 @@ import re
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
@@ -15,6 +16,8 @@ from discord.ext import commands, tasks
 from squicat_bot.i18n import language_for, text
 
 ONCE_DURATION = re.compile(r"^\s*(?:(?P<hours>\d+)\s*h)?\s*(?:(?P<minutes>\d+)\s*m)?\s*$", re.IGNORECASE)
+SPECIFIC_TIME = re.compile(r"^\s*(?P<date>today|tomorrow|今天|明天|\d{8})\s+(?P<time>\d{4})\s*$", re.IGNORECASE)
+MALAYSIA_TIMEZONE = ZoneInfo("Asia/Kuala_Lumpur")
 
 
 class ReminderCog(commands.Cog):
@@ -45,7 +48,7 @@ class ReminderCog(commands.Cog):
         self.connection.close()
 
     async def create_reminder(
-        self, interaction: discord.Interaction, message: str, once: str | None,
+        self, interaction: discord.Interaction, message: str, once: str | None, at_time: str | None,
         every_hours: int | None, every_days: int | None, every_months: int | None,
         member: discord.Member | None, role: discord.Role | None,
         post_channel: discord.TextChannel | None,
@@ -57,7 +60,7 @@ class ReminderCog(commands.Cog):
         if role is not None and role.is_default() and not interaction.user.guild_permissions.mention_everyone:
             await interaction.response.send_message(text(language, "everyone_denied"), ephemeral=True)
             return
-        choices = [once, every_hours, every_days, every_months]
+        choices = [once, at_time, every_hours, every_days, every_months]
         count = sum(value is not None for value in choices)
         if count == 0:
             await interaction.response.send_message(text(language, "schedule_required"), ephemeral=True)
@@ -82,20 +85,31 @@ class ReminderCog(commands.Cog):
                 return
             schedule_key, schedule_amount = "once", self.duration_to_minutes(duration)
             schedule_value = text(language, "once_after", duration=duration)
+            next_run = self.next_run(schedule_key, schedule_amount)
+        elif at_time is not None:
+            specified_run = self.parse_specific_time(at_time)
+            if specified_run is None:
+                await interaction.response.send_message(text(language, "invalid_specific_time"), ephemeral=True)
+                return
+            schedule_key, schedule_amount = "once", 0
+            next_run = specified_run
+            schedule_value = text(language, "once_at", time=self.format_malaysia_time(specified_run, language))
         elif every_hours is not None:
             schedule_key, schedule_amount = "every_hours", every_hours
             schedule_value = text(language, "every_hours", amount=every_hours)
+            next_run = self.next_run(schedule_key, schedule_amount)
         elif every_days is not None:
             schedule_key, schedule_amount = "every_days", every_days
             schedule_value = text(language, "every_days", amount=every_days)
+            next_run = self.next_run(schedule_key, schedule_amount)
         else:
             schedule_key, schedule_amount = "every_months", every_months
             schedule_value = text(language, "every_months", amount=every_months)
+            next_run = self.next_run(schedule_key, schedule_amount)
 
         target_type = "member" if member is not None else "role" if role is not None else "member"
         target_id = member.id if member is not None else role.id if role is not None else interaction.user.id
         target = member.mention if member is not None else role.mention if role is not None else interaction.user.mention
-        next_run = self.next_run(schedule_key, schedule_amount)
         self.connection.execute(
             """INSERT INTO reminders (guild_id, channel_id, creator_id, target_type, target_id, message,
                schedule_type, schedule_amount, next_run_at, language, creator_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -128,6 +142,46 @@ class ReminderCog(commands.Cog):
         match = ONCE_DURATION.fullmatch(value)
         assert match is not None
         return int(match.group("hours") or 0) * 60 + int(match.group("minutes") or 0)
+
+    @staticmethod
+    def parse_specific_time(value: str, now: datetime | None = None) -> datetime | None:
+        """Parse a Malaysia-local one-time time and return it in UTC.
+
+        Supports ``今天 1730``, ``明天 1500``, and ``YYYYMMDD HHMM``.
+        English clients may also enter ``today 1730`` or ``tomorrow 1500``.
+        """
+        match = SPECIFIC_TIME.fullmatch(value)
+        if match is None:
+            return None
+        local_now = (now or datetime.now(MALAYSIA_TIMEZONE)).astimezone(MALAYSIA_TIMEZONE)
+        date_value, time_value = match.group("date").lower(), match.group("time")
+        hour, minute = int(time_value[:2]), int(time_value[2:])
+        if hour > 23 or minute > 59:
+            return None
+        if date_value in {"today", "今天"}:
+            target_date = local_now.date()
+        elif date_value in {"tomorrow", "明天"}:
+            target_date = (local_now + timedelta(days=1)).date()
+        else:
+            try:
+                # The documented compact date is YYYYMMDD, matching the bot's
+                # Chinese-first Malaysia-facing interface.
+                target_date = datetime.strptime(date_value, "%Y%m%d").date()
+            except ValueError:
+                return None
+        local_time = datetime(
+            target_date.year, target_date.month, target_date.day, hour, minute, tzinfo=MALAYSIA_TIMEZONE
+        )
+        if local_time <= local_now:
+            return None
+        return local_time.astimezone(UTC)
+
+    @staticmethod
+    def format_malaysia_time(value: datetime, language: str) -> str:
+        local_time = value.astimezone(MALAYSIA_TIMEZONE)
+        if language == "zh":
+            return f"{local_time.year}/{local_time.month:02d}/{local_time.day:02d} {local_time:%H:%M}（馬來西亞時間）"
+        return f"{local_time:%Y/%m/%d %H:%M} (Malaysia time)"
 
     @staticmethod
     def next_run(schedule_type: str, amount: int, from_time: datetime | None = None) -> datetime:
@@ -279,16 +333,16 @@ class ReminderCog(commands.Cog):
 
     @app_commands.guild_only()
     @app_commands.command(name="reminder", description="Create and send a reminder.")
-    @app_commands.describe(message="What should Squicat remind them about?", once="Once only, e.g. 5h30m.", every_hours="Repeat every X hours.", every_days="Repeat every X days.", every_months="Repeat every X months.", member="Optional member; leave blank for yourself.", role="Optional role; leave blank for yourself.", post_channel="Optional channel to post the reminder in; leave blank for this channel.")
-    async def reminder(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 1000], once: str | None = None, every_hours: app_commands.Range[int, 1, 8760] | None = None, every_days: app_commands.Range[int, 1, 8760] | None = None, every_months: app_commands.Range[int, 1, 8760] | None = None, member: discord.Member | None = None, role: discord.Role | None = None, post_channel: discord.TextChannel | None = None) -> None:
-        await self.create_reminder(interaction, message, once, every_hours, every_days, every_months, member, role, post_channel)
+    @app_commands.describe(message="What should Squicat remind them about?", once="Once only after a duration, e.g. 5h30m.", at_time="One-time at today 1730, tomorrow 1500, or YYYYMMDD HHMM.", every_hours="Repeat every X hours.", every_days="Repeat every X days.", every_months="Repeat every X months.", member="Optional member; leave blank for yourself.", role="Optional role; leave blank for yourself.", post_channel="Optional channel to post the reminder in; leave blank for this channel.")
+    async def reminder(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 1000], once: str | None = None, at_time: str | None = None, every_hours: app_commands.Range[int, 1, 8760] | None = None, every_days: app_commands.Range[int, 1, 8760] | None = None, every_months: app_commands.Range[int, 1, 8760] | None = None, member: discord.Member | None = None, role: discord.Role | None = None, post_channel: discord.TextChannel | None = None) -> None:
+        await self.create_reminder(interaction, message, once, at_time, every_hours, every_days, every_months, member, role, post_channel)
 
     @app_commands.guild_only()
     @app_commands.command(name="提醒", description="建立並送出提醒。")
-    @app_commands.rename(once="一次", every_hours="每x小時", every_days="每x天", every_months="每x個月", post_channel="發佈頻道")
-    @app_commands.describe(message="想提醒對方什麼？", once="一次提醒；填寫時間，例如 5h30m。", every_hours="每 X 小時提醒一次；直接填 X。", every_days="每 X 天提醒一次；直接填 X。", every_months="每 X 個月提醒一次；直接填 X。", member="選填；留空就提醒自己，否則選擇一位成員。", role="選填；留空就提醒自己，否則選擇一個身分組；有權限時可選 @everyone。", post_channel="選填；指定提醒要發佈的文字頻道，留空就是目前頻道。")
-    async def reminder_chinese(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 1000], once: str | None = None, every_hours: app_commands.Range[int, 1, 8760] | None = None, every_days: app_commands.Range[int, 1, 8760] | None = None, every_months: app_commands.Range[int, 1, 8760] | None = None, member: discord.Member | None = None, role: discord.Role | None = None, post_channel: discord.TextChannel | None = None) -> None:
-        await self.create_reminder(interaction, message, once, every_hours, every_days, every_months, member, role, post_channel)
+    @app_commands.rename(once="一次", at_time="指定時間", every_hours="每x小時", every_days="每x天", every_months="每x個月", post_channel="發佈頻道")
+    @app_commands.describe(message="想提醒對方什麼？", once="一次提醒；填寫相對時間，例如 5h30m。", at_time="一次提醒；今天 1730、明天 1500，或 YYYYMMDD HHMM，例如 20260731 1500。", every_hours="每 X 小時提醒一次；直接填 X。", every_days="每 X 天提醒一次；直接填 X。", every_months="每 X 個月提醒一次；直接填 X。", member="選填；留空就提醒自己，否則選擇一位成員。", role="選填；留空就提醒自己，否則選擇一個身分組；有權限時可選 @everyone。", post_channel="選填；指定提醒要發佈的文字頻道，留空就是目前頻道。")
+    async def reminder_chinese(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 1000], once: str | None = None, at_time: str | None = None, every_hours: app_commands.Range[int, 1, 8760] | None = None, every_days: app_commands.Range[int, 1, 8760] | None = None, every_months: app_commands.Range[int, 1, 8760] | None = None, member: discord.Member | None = None, role: discord.Role | None = None, post_channel: discord.TextChannel | None = None) -> None:
+        await self.create_reminder(interaction, message, once, at_time, every_hours, every_days, every_months, member, role, post_channel)
 
     @app_commands.guild_only()
     @app_commands.command(name="reminders", description="View your active and scheduled reminders.")
