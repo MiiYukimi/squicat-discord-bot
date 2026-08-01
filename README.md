@@ -63,7 +63,14 @@ For quick testing, add your test server's numeric ID to `DEV_GUILD_ID`. Otherwis
 | `/提醒列表` / `/reminders` | Privately view reminders you created, including time until the next delivery and repeat type. |
 | `/停止提醒` / `/stop_reminder` | Stop one of your own repeating reminders using the ID from the list. |
 
-Both commands follow this order: reminder text, timing, then an optional target member or role, then an optional posting channel. Choose **one** of `once` (a duration such as `5h30m`), `every_hours`, `every_days`, or `every_months`. `at_time` / `指定時間` (`今天 1730`, `明天 1500`, or `YYYYMMDD HHMM`, e.g. `20260731 1500`) can stand alone for a one-time reminder, or be combined with one repeat option to set the first delivery time. Specified times use Malaysia time (UTC+8). If both target fields are blank, the reminder is for the person who created it. If the posting channel is blank, the reminder is posted in the channel where the command was used.
+Both reminder commands open a guided four-step flow instead of showing every field in a single Slash Command:
+
+1. Write the reminder message.
+2. Choose the timing. For a repeating reminder, first enter **X**, then enter the exact first reminder time (`今天 1730`, `明天 1500`, or `YYYYMMDD HHMM`, e.g. `20260805 0900`).
+3. Select the text channel where the reminder should be posted.
+4. Select one member or role to remind, or choose **提醒自己 / Remind myself**.
+
+Specified times use Malaysia time (UTC+8). One-time duration reminders still accept `5h30m`, `2h`, or `30m`.
 
 ## Project layout
 
