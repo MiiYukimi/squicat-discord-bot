@@ -5,6 +5,7 @@ from __future__ import annotations
 import calendar
 import re
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -18,6 +19,220 @@ from squicat_bot.i18n import language_for, text
 ONCE_DURATION = re.compile(r"^\s*(?:(?P<hours>\d+)\s*h)?\s*(?:(?P<minutes>\d+)\s*m)?\s*$", re.IGNORECASE)
 SPECIFIC_TIME = re.compile(r"^\s*(?P<date>today|tomorrow|今天|明天|\d{8})\s+(?P<time>\d{4})\s*$", re.IGNORECASE)
 MALAYSIA_TIMEZONE = ZoneInfo("Asia/Kuala_Lumpur")
+
+
+@dataclass
+class ReminderDraft:
+    """Short-lived state for the guided reminder creation flow."""
+
+    creator_id: int
+    language: str
+    message: str
+    schedule_key: str | None = None
+    schedule_amount: int | None = None
+    next_run: datetime | None = None
+    schedule_value: str | None = None
+    first_run_value: str | None = None
+    post_channel: discord.TextChannel | None = None
+
+
+def ui_text(language: str, chinese: str, english: str) -> str:
+    return chinese if language == "zh" else english
+
+
+class OwnerView(discord.ui.View):
+    """A view that can only be completed by the person who started it."""
+
+    def __init__(self, cog: "ReminderCog", draft: ReminderDraft) -> None:
+        super().__init__(timeout=600)
+        self.cog, self.draft = cog, draft
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.draft.creator_id:
+            return True
+        await interaction.response.send_message(
+            ui_text(self.draft.language, "這個提醒設定不是你的喔。", "This reminder setup belongs to someone else."),
+            ephemeral=True,
+        )
+        return False
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+
+class MessageModal(discord.ui.Modal):
+    def __init__(self, cog: "ReminderCog", language: str) -> None:
+        super().__init__(title=ui_text(language, "① 提醒訊息", "1. Reminder message"))
+        self.cog, self.language = cog, language
+        self.message_input = discord.ui.TextInput(
+            label=ui_text(language, "想提醒什麼？", "What should Squicat remind them about?"),
+            style=discord.TextStyle.paragraph,
+            max_length=1000,
+        )
+        self.add_item(self.message_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        draft = ReminderDraft(interaction.user.id, self.language, self.message_input.value.strip())
+        await interaction.response.send_message(
+            ui_text(self.language, "② 選擇提醒時間／循環方式", "2. Choose timing / repeat type"),
+            view=ScheduleView(self.cog, draft),
+            ephemeral=True,
+        )
+
+
+class ScheduleSelect(discord.ui.Select):
+    def __init__(self, cog: "ReminderCog", draft: ReminderDraft) -> None:
+        self.cog, self.draft = cog, draft
+        language = draft.language
+        super().__init__(
+            placeholder=ui_text(language, "選擇一種提醒方式", "Choose one reminder type"),
+            options=[
+                discord.SelectOption(label=ui_text(language, "一次：多久後", "Once: after a duration"), value="once"),
+                discord.SelectOption(label=ui_text(language, "一次：指定時間", "Once: at a specific time"), value="at_time"),
+                discord.SelectOption(label=ui_text(language, "每 X 小時", "Every X hours"), value="every_hours"),
+                discord.SelectOption(label=ui_text(language, "每 X 天", "Every X days"), value="every_days"),
+                discord.SelectOption(label=ui_text(language, "每 X 個月", "Every X months"), value="every_months"),
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        schedule_key = self.values[0]
+        if schedule_key in {"every_hours", "every_days", "every_months"}:
+            await interaction.response.send_modal(RepeatAmountModal(self.cog, self.draft, schedule_key))
+        else:
+            await interaction.response.send_modal(OneTimeModal(self.cog, self.draft, schedule_key))
+
+
+class ScheduleView(OwnerView):
+    def __init__(self, cog: "ReminderCog", draft: ReminderDraft) -> None:
+        super().__init__(cog, draft)
+        self.add_item(ScheduleSelect(cog, draft))
+
+
+class OneTimeModal(discord.ui.Modal):
+    def __init__(self, cog: "ReminderCog", draft: ReminderDraft, schedule_key: str) -> None:
+        language = draft.language
+        title = ui_text(language, "② 設定一次提醒", "2. Set one-time reminder")
+        super().__init__(title=title)
+        self.cog, self.draft, self.schedule_key = cog, draft, schedule_key
+        specific = schedule_key == "at_time"
+        self.value_input = discord.ui.TextInput(
+            label=ui_text(language, "提醒時間", "Reminder time") if specific else ui_text(language, "多久後提醒？", "Remind after how long?"),
+            placeholder=(ui_text(language, "今天 1730／明天 1500／20260805 0900", "today 1730 / tomorrow 1500 / 20260805 0900") if specific else "5h30m"),
+            max_length=30,
+        )
+        self.add_item(self.value_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if self.schedule_key == "once":
+            duration = self.cog.parse_once_duration(self.value_input.value)
+            if duration is None:
+                await interaction.response.send_message(text(self.draft.language, "invalid_once_duration"), ephemeral=True)
+                return
+            self.draft.schedule_key, self.draft.schedule_amount = "once", self.cog.duration_to_minutes(duration)
+            self.draft.next_run = self.cog.next_run("once", self.draft.schedule_amount)
+            self.draft.schedule_value = text(self.draft.language, "once_after", duration=duration)
+        else:
+            specified_run = self.cog.parse_specific_time(self.value_input.value)
+            if specified_run is None:
+                await interaction.response.send_message(text(self.draft.language, "invalid_specific_time"), ephemeral=True)
+                return
+            self.draft.schedule_key, self.draft.schedule_amount, self.draft.next_run = "once", 0, specified_run
+            self.draft.schedule_value = text(self.draft.language, "once_at", time=self.cog.format_malaysia_time(specified_run, self.draft.language))
+        await self.cog.show_channel_step(interaction, self.draft)
+
+
+class RepeatAmountModal(discord.ui.Modal):
+    def __init__(self, cog: "ReminderCog", draft: ReminderDraft, schedule_key: str) -> None:
+        super().__init__(title=ui_text(draft.language, "② 填寫循環間隔", "2. Enter repeat interval"))
+        self.cog, self.draft, self.schedule_key = cog, draft, schedule_key
+        labels = {
+            "every_hours": ui_text(draft.language, "每幾小時提醒一次？", "Repeat every how many hours?"),
+            "every_days": ui_text(draft.language, "每幾天提醒一次？", "Repeat every how many days?"),
+            "every_months": ui_text(draft.language, "每幾個月提醒一次？", "Repeat every how many months?"),
+        }
+        self.amount_input = discord.ui.TextInput(label=labels[schedule_key], placeholder="例如：1", max_length=4)
+        self.add_item(self.amount_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            amount = int(self.amount_input.value.strip())
+        except ValueError:
+            amount = 0
+        if not 1 <= amount <= 8760:
+            await interaction.response.send_message(ui_text(self.draft.language, "請填寫 1 至 8760 的整數。", "Enter a whole number from 1 to 8760."), ephemeral=True)
+            return
+        self.draft.schedule_key, self.draft.schedule_amount = self.schedule_key, amount
+        self.draft.schedule_value = text(self.draft.language, self.schedule_key, amount=amount)
+        await interaction.response.send_modal(FirstRunModal(self.cog, self.draft))
+
+
+class FirstRunModal(discord.ui.Modal):
+    def __init__(self, cog: "ReminderCog", draft: ReminderDraft) -> None:
+        super().__init__(title=ui_text(draft.language, "② 設定第一次提醒時間", "2. Set first reminder time"))
+        self.cog, self.draft = cog, draft
+        self.time_input = discord.ui.TextInput(
+            label=ui_text(draft.language, "第一次什麼時候提醒？", "When should the first reminder be?"),
+            placeholder=ui_text(draft.language, "今天 1730／明天 1500／20260805 0900", "today 1730 / tomorrow 1500 / 20260805 0900"),
+            max_length=30,
+        )
+        self.add_item(self.time_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        specified_run = self.cog.parse_specific_time(self.time_input.value)
+        if specified_run is None:
+            await interaction.response.send_message(text(self.draft.language, "invalid_specific_time"), ephemeral=True)
+            return
+        self.draft.next_run = specified_run
+        self.draft.first_run_value = self.cog.format_malaysia_time(specified_run, self.draft.language)
+        await self.cog.show_channel_step(interaction, self.draft)
+
+
+class ChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, cog: "ReminderCog", draft: ReminderDraft) -> None:
+        self.cog, self.draft = cog, draft
+        super().__init__(
+            placeholder=ui_text(draft.language, "選擇發佈提醒的頻道", "Choose the channel to post in"),
+            channel_types=[discord.ChannelType.text],
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        channel = self.values[0]
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message(text(self.draft.language, "channel_unavailable"), ephemeral=True)
+            return
+        self.draft.post_channel = channel
+        await interaction.response.edit_message(
+            content=ui_text(self.draft.language, "④ 選擇提醒對象", "4. Choose who to remind"),
+            view=TargetView(self.cog, self.draft),
+        )
+
+
+class ChannelView(OwnerView):
+    def __init__(self, cog: "ReminderCog", draft: ReminderDraft) -> None:
+        super().__init__(cog, draft)
+        self.add_item(ChannelSelect(cog, draft))
+
+
+class TargetSelect(discord.ui.MentionableSelect):
+    def __init__(self, cog: "ReminderCog", draft: ReminderDraft) -> None:
+        self.cog, self.draft = cog, draft
+        super().__init__(placeholder=ui_text(draft.language, "選擇一位成員或一個身分組", "Choose one member or role"), min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        chosen = self.values[0]
+        await self.cog.finalize_draft(interaction, self.draft, chosen if isinstance(chosen, discord.Member) else None, chosen if isinstance(chosen, discord.Role) else None)
+
+
+class TargetView(OwnerView):
+    def __init__(self, cog: "ReminderCog", draft: ReminderDraft) -> None:
+        super().__init__(cog, draft)
+        self.add_item(TargetSelect(cog, draft))
+
+    @discord.ui.button(label="提醒自己", style=discord.ButtonStyle.secondary, emoji="🐿️")
+    async def remind_self(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.cog.finalize_draft(interaction, self.draft, None, None)
 
 
 class ReminderCog(commands.Cog):
@@ -134,6 +349,70 @@ class ReminderCog(commands.Cog):
         if first_run_value is not None:
             embed.add_field(name=text(language, "field_first_run"), value=first_run_value, inline=False)
         embed.set_footer(text=text(language, "scheduled_notice"))
+        await interaction.response.send_message(embed=embed)
+
+    async def show_channel_step(self, interaction: discord.Interaction, draft: ReminderDraft) -> None:
+        """Move a guided reminder to its third, channel-selection step."""
+        await interaction.response.send_message(
+            ui_text(draft.language, "③ 選擇發佈頻道", "3. Choose posting channel"),
+            view=ChannelView(self, draft),
+            ephemeral=True,
+        )
+
+    async def finalize_draft(
+        self,
+        interaction: discord.Interaction,
+        draft: ReminderDraft,
+        member: discord.Member | None,
+        role: discord.Role | None,
+    ) -> None:
+        """Validate the final two selections, persist the reminder, and confirm it."""
+        assert draft.schedule_key is not None
+        assert draft.schedule_amount is not None
+        assert draft.next_run is not None
+        destination = draft.post_channel
+        if destination is None:
+            await interaction.response.send_message(text(draft.language, "channel_unavailable"), ephemeral=True)
+            return
+        if role is not None and role.is_default() and not interaction.user.guild_permissions.mention_everyone:
+            await interaction.response.send_message(text(draft.language, "everyone_denied"), ephemeral=True)
+            return
+        permissions = destination.permissions_for(interaction.guild.me) if interaction.guild else None
+        if permissions is None or not permissions.view_channel or not permissions.send_messages:
+            await interaction.response.send_message(text(draft.language, "channel_unavailable"), ephemeral=True)
+            return
+
+        target_type = "member" if member is not None else "role" if role is not None else "member"
+        target_id = member.id if member is not None else role.id if role is not None else interaction.user.id
+        target = member.mention if member is not None else role.mention if role is not None else interaction.user.mention
+        self.connection.execute(
+            """INSERT INTO reminders (guild_id, channel_id, creator_id, target_type, target_id, message,
+               schedule_type, schedule_amount, next_run_at, language, creator_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                interaction.guild_id,
+                destination.id,
+                interaction.user.id,
+                target_type,
+                target_id,
+                draft.message,
+                draft.schedule_key,
+                draft.schedule_amount,
+                draft.next_run.isoformat(),
+                draft.language,
+                interaction.user.display_name,
+            ),
+        )
+        self.connection.commit()
+
+        embed = discord.Embed(title=text(draft.language, "scheduled_title"), colour=discord.Colour.teal())
+        embed.add_field(name=text(draft.language, "field_message"), value=draft.message, inline=False)
+        embed.add_field(name=text(draft.language, "field_type"), value=text(draft.language, f"type_{draft.schedule_key}"), inline=True)
+        embed.add_field(name=text(draft.language, "field_interval"), value=draft.schedule_value or "—", inline=True)
+        embed.add_field(name=text(draft.language, "field_target"), value=target, inline=True)
+        embed.add_field(name=text(draft.language, "field_channel"), value=destination.mention, inline=True)
+        if draft.first_run_value is not None:
+            embed.add_field(name=text(draft.language, "field_first_run"), value=draft.first_run_value, inline=False)
+        embed.set_footer(text=text(draft.language, "scheduled_notice"))
         await interaction.response.send_message(embed=embed)
 
     @staticmethod
@@ -342,16 +621,15 @@ class ReminderCog(commands.Cog):
 
     @app_commands.guild_only()
     @app_commands.command(name="reminder", description="Create and send a reminder.")
-    @app_commands.describe(message="What should Squicat remind them about?", once="Once only after a duration, e.g. 5h30m.", at_time="Optional first delivery time: today 1730, tomorrow 1500, or YYYYMMDD HHMM.", every_hours="Repeat every X hours.", every_days="Repeat every X days.", every_months="Repeat every X months.", member="Optional member; leave blank for yourself.", role="Optional role; leave blank for yourself.", post_channel="Optional channel to post the reminder in; leave blank for this channel.")
-    async def reminder(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 1000], once: str | None = None, at_time: str | None = None, every_hours: app_commands.Range[int, 1, 8760] | None = None, every_days: app_commands.Range[int, 1, 8760] | None = None, every_months: app_commands.Range[int, 1, 8760] | None = None, member: discord.Member | None = None, role: discord.Role | None = None, post_channel: discord.TextChannel | None = None) -> None:
-        await self.create_reminder(interaction, message, once, at_time, every_hours, every_days, every_months, member, role, post_channel)
+    async def reminder(self, interaction: discord.Interaction) -> None:
+        language = language_for(interaction.locale, self.bot.default_language)
+        await interaction.response.send_modal(MessageModal(self, language))
 
     @app_commands.guild_only()
     @app_commands.command(name="提醒", description="建立並送出提醒。")
-    @app_commands.rename(once="一次", at_time="指定時間", every_hours="每x小時", every_days="每x天", every_months="每x個月", post_channel="發佈頻道")
-    @app_commands.describe(message="想提醒對方什麼？", once="一次提醒；填寫相對時間，例如 5h30m。", at_time="選填；第一次觸發時間：今天 1730、明天 1500，或 YYYYMMDD HHMM，例如 20260731 1500。", every_hours="每 X 小時提醒一次；直接填 X。", every_days="每 X 天提醒一次；直接填 X。", every_months="每 X 個月提醒一次；直接填 X。", member="選填；留空就提醒自己，否則選擇一位成員。", role="選填；留空就提醒自己，否則選擇一個身分組；有權限時可選 @everyone。", post_channel="選填；指定提醒要發佈的文字頻道，留空就是目前頻道。")
-    async def reminder_chinese(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 1000], once: str | None = None, at_time: str | None = None, every_hours: app_commands.Range[int, 1, 8760] | None = None, every_days: app_commands.Range[int, 1, 8760] | None = None, every_months: app_commands.Range[int, 1, 8760] | None = None, member: discord.Member | None = None, role: discord.Role | None = None, post_channel: discord.TextChannel | None = None) -> None:
-        await self.create_reminder(interaction, message, once, at_time, every_hours, every_days, every_months, member, role, post_channel)
+    async def reminder_chinese(self, interaction: discord.Interaction) -> None:
+        language = language_for(interaction.locale, self.bot.default_language)
+        await interaction.response.send_modal(MessageModal(self, language))
 
     @app_commands.guild_only()
     @app_commands.command(name="reminders", description="View your active and scheduled reminders.")
