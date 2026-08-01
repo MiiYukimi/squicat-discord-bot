@@ -60,12 +60,12 @@ class ReminderCog(commands.Cog):
         if role is not None and role.is_default() and not interaction.user.guild_permissions.mention_everyone:
             await interaction.response.send_message(text(language, "everyone_denied"), ephemeral=True)
             return
-        choices = [once, at_time, every_hours, every_days, every_months]
-        count = sum(value is not None for value in choices)
-        if count == 0:
+        repeat_choices = [every_hours, every_days, every_months]
+        schedule_count = int(once is not None) + sum(value is not None for value in repeat_choices)
+        if schedule_count == 0 and at_time is None:
             await interaction.response.send_message(text(language, "schedule_required"), ephemeral=True)
             return
-        if count > 1:
+        if schedule_count > 1 or (once is not None and at_time is not None):
             await interaction.response.send_message(text(language, "only_one_schedule"), ephemeral=True)
             return
 
@@ -78,6 +78,12 @@ class ReminderCog(commands.Cog):
             await interaction.response.send_message(text(language, "channel_unavailable"), ephemeral=True)
             return
 
+        specified_run = self.parse_specific_time(at_time) if at_time is not None else None
+        if at_time is not None and specified_run is None:
+            await interaction.response.send_message(text(language, "invalid_specific_time"), ephemeral=True)
+            return
+
+        first_run_value: str | None = None
         if once is not None:
             duration = self.parse_once_duration(once)
             if duration is None:
@@ -86,26 +92,27 @@ class ReminderCog(commands.Cog):
             schedule_key, schedule_amount = "once", self.duration_to_minutes(duration)
             schedule_value = text(language, "once_after", duration=duration)
             next_run = self.next_run(schedule_key, schedule_amount)
-        elif at_time is not None:
-            specified_run = self.parse_specific_time(at_time)
-            if specified_run is None:
-                await interaction.response.send_message(text(language, "invalid_specific_time"), ephemeral=True)
-                return
-            schedule_key, schedule_amount = "once", 0
-            next_run = specified_run
-            schedule_value = text(language, "once_at", time=self.format_malaysia_time(specified_run, language))
         elif every_hours is not None:
             schedule_key, schedule_amount = "every_hours", every_hours
             schedule_value = text(language, "every_hours", amount=every_hours)
-            next_run = self.next_run(schedule_key, schedule_amount)
+            next_run = specified_run or self.next_run(schedule_key, schedule_amount)
+            first_run_value = self.format_malaysia_time(specified_run, language) if specified_run else None
         elif every_days is not None:
             schedule_key, schedule_amount = "every_days", every_days
             schedule_value = text(language, "every_days", amount=every_days)
-            next_run = self.next_run(schedule_key, schedule_amount)
-        else:
+            next_run = specified_run or self.next_run(schedule_key, schedule_amount)
+            first_run_value = self.format_malaysia_time(specified_run, language) if specified_run else None
+        elif every_months is not None:
             schedule_key, schedule_amount = "every_months", every_months
             schedule_value = text(language, "every_months", amount=every_months)
-            next_run = self.next_run(schedule_key, schedule_amount)
+            next_run = specified_run or self.next_run(schedule_key, schedule_amount)
+            first_run_value = self.format_malaysia_time(specified_run, language) if specified_run else None
+        else:
+            # A specified time on its own is a one-time reminder.
+            schedule_key, schedule_amount = "once", 0
+            assert specified_run is not None
+            next_run = specified_run
+            schedule_value = text(language, "once_at", time=self.format_malaysia_time(specified_run, language))
 
         target_type = "member" if member is not None else "role" if role is not None else "member"
         target_id = member.id if member is not None else role.id if role is not None else interaction.user.id
@@ -124,6 +131,8 @@ class ReminderCog(commands.Cog):
         embed.add_field(name=text(language, "field_interval"), value=schedule_value, inline=True)
         embed.add_field(name=text(language, "field_target"), value=target, inline=True)
         embed.add_field(name=text(language, "field_channel"), value=destination.mention, inline=True)
+        if first_run_value is not None:
+            embed.add_field(name=text(language, "field_first_run"), value=first_run_value, inline=False)
         embed.set_footer(text=text(language, "scheduled_notice"))
         await interaction.response.send_message(embed=embed)
 
@@ -333,14 +342,14 @@ class ReminderCog(commands.Cog):
 
     @app_commands.guild_only()
     @app_commands.command(name="reminder", description="Create and send a reminder.")
-    @app_commands.describe(message="What should Squicat remind them about?", once="Once only after a duration, e.g. 5h30m.", at_time="One-time at today 1730, tomorrow 1500, or YYYYMMDD HHMM.", every_hours="Repeat every X hours.", every_days="Repeat every X days.", every_months="Repeat every X months.", member="Optional member; leave blank for yourself.", role="Optional role; leave blank for yourself.", post_channel="Optional channel to post the reminder in; leave blank for this channel.")
+    @app_commands.describe(message="What should Squicat remind them about?", once="Once only after a duration, e.g. 5h30m.", at_time="Optional first delivery time: today 1730, tomorrow 1500, or YYYYMMDD HHMM.", every_hours="Repeat every X hours.", every_days="Repeat every X days.", every_months="Repeat every X months.", member="Optional member; leave blank for yourself.", role="Optional role; leave blank for yourself.", post_channel="Optional channel to post the reminder in; leave blank for this channel.")
     async def reminder(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 1000], once: str | None = None, at_time: str | None = None, every_hours: app_commands.Range[int, 1, 8760] | None = None, every_days: app_commands.Range[int, 1, 8760] | None = None, every_months: app_commands.Range[int, 1, 8760] | None = None, member: discord.Member | None = None, role: discord.Role | None = None, post_channel: discord.TextChannel | None = None) -> None:
         await self.create_reminder(interaction, message, once, at_time, every_hours, every_days, every_months, member, role, post_channel)
 
     @app_commands.guild_only()
     @app_commands.command(name="提醒", description="建立並送出提醒。")
     @app_commands.rename(once="一次", at_time="指定時間", every_hours="每x小時", every_days="每x天", every_months="每x個月", post_channel="發佈頻道")
-    @app_commands.describe(message="想提醒對方什麼？", once="一次提醒；填寫相對時間，例如 5h30m。", at_time="一次提醒；今天 1730、明天 1500，或 YYYYMMDD HHMM，例如 20260731 1500。", every_hours="每 X 小時提醒一次；直接填 X。", every_days="每 X 天提醒一次；直接填 X。", every_months="每 X 個月提醒一次；直接填 X。", member="選填；留空就提醒自己，否則選擇一位成員。", role="選填；留空就提醒自己，否則選擇一個身分組；有權限時可選 @everyone。", post_channel="選填；指定提醒要發佈的文字頻道，留空就是目前頻道。")
+    @app_commands.describe(message="想提醒對方什麼？", once="一次提醒；填寫相對時間，例如 5h30m。", at_time="選填；第一次觸發時間：今天 1730、明天 1500，或 YYYYMMDD HHMM，例如 20260731 1500。", every_hours="每 X 小時提醒一次；直接填 X。", every_days="每 X 天提醒一次；直接填 X。", every_months="每 X 個月提醒一次；直接填 X。", member="選填；留空就提醒自己，否則選擇一位成員。", role="選填；留空就提醒自己，否則選擇一個身分組；有權限時可選 @everyone。", post_channel="選填；指定提醒要發佈的文字頻道，留空就是目前頻道。")
     async def reminder_chinese(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 1000], once: str | None = None, at_time: str | None = None, every_hours: app_commands.Range[int, 1, 8760] | None = None, every_days: app_commands.Range[int, 1, 8760] | None = None, every_months: app_commands.Range[int, 1, 8760] | None = None, member: discord.Member | None = None, role: discord.Role | None = None, post_channel: discord.TextChannel | None = None) -> None:
         await self.create_reminder(interaction, message, once, at_time, every_hours, every_days, every_months, member, role, post_channel)
 
