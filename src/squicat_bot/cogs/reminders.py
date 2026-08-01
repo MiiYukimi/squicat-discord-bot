@@ -165,6 +165,25 @@ class RepeatAmountModal(discord.ui.Modal):
             return
         self.draft.schedule_key, self.draft.schedule_amount = self.schedule_key, amount
         self.draft.schedule_value = text(self.draft.language, self.schedule_key, amount=amount)
+        # Discord does not permit opening a second modal as the direct response
+        # to a modal submission.  Use one small interstitial button instead;
+        # its button interaction can legally open the time-entry modal.
+        await interaction.response.send_message(
+            ui_text(
+                self.draft.language,
+                f"已設定 {self.draft.schedule_value}。接著填寫第一次提醒時間。",
+                f"Set to {self.draft.schedule_value}. Next, enter the first reminder time.",
+            ),
+            view=FirstRunView(self.cog, self.draft),
+            ephemeral=True,
+        )
+
+
+class FirstRunView(OwnerView):
+    """A legal bridge between the repeat-amount and first-run modals."""
+
+    @discord.ui.button(label="填寫第一次提醒時間", style=discord.ButtonStyle.primary, emoji="🕒")
+    async def enter_first_time(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(FirstRunModal(self.cog, self.draft))
 
 
@@ -198,8 +217,11 @@ class ChannelSelect(discord.ui.ChannelSelect):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        channel = self.values[0]
-        if not isinstance(channel, discord.TextChannel):
+        # ChannelSelect returns an AppCommandChannel during an interaction,
+        # rather than a discord.TextChannel.  Resolve it through the guild
+        # cache/API before validating permissions.
+        channel = await self.cog.resolve_post_channel(interaction, self.values[0].id)
+        if channel is None:
             await interaction.response.send_message(text(self.draft.language, "channel_unavailable"), ephemeral=True)
             return
         self.draft.post_channel = channel
@@ -359,6 +381,34 @@ class ReminderCog(commands.Cog):
             ephemeral=True,
         )
 
+    async def resolve_post_channel(self, interaction: discord.Interaction, channel_id: int) -> discord.TextChannel | None:
+        """Return a usable text channel selected from a Discord UI component."""
+        guild = interaction.guild
+        if guild is None:
+            return None
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await guild.fetch_channel(channel_id)
+            except discord.HTTPException:
+                return None
+        if not isinstance(channel, discord.TextChannel):
+            return None
+
+        bot_user = self.bot.user
+        me = guild.me or (guild.get_member(bot_user.id) if bot_user else None)
+        if me is None and bot_user is not None:
+            try:
+                me = await guild.fetch_member(bot_user.id)
+            except discord.HTTPException:
+                return None
+        if me is None:
+            return None
+        permissions = channel.permissions_for(me)
+        if not permissions.view_channel or not permissions.send_messages:
+            return None
+        return channel
+
     async def finalize_draft(
         self,
         interaction: discord.Interaction,
@@ -377,10 +427,11 @@ class ReminderCog(commands.Cog):
         if role is not None and role.is_default() and not interaction.user.guild_permissions.mention_everyone:
             await interaction.response.send_message(text(draft.language, "everyone_denied"), ephemeral=True)
             return
-        permissions = destination.permissions_for(interaction.guild.me) if interaction.guild else None
-        if permissions is None or not permissions.view_channel or not permissions.send_messages:
+        verified_destination = await self.resolve_post_channel(interaction, destination.id)
+        if verified_destination is None:
             await interaction.response.send_message(text(draft.language, "channel_unavailable"), ephemeral=True)
             return
+        destination = verified_destination
 
         target_type = "member" if member is not None else "role" if role is not None else "member"
         target_id = member.id if member is not None else role.id if role is not None else interaction.user.id
