@@ -10,6 +10,7 @@
 
 ## [Unreleased]
 
+- Add owner-only `/代發` and `/say`: write a message privately, select a text channel, and let Squicat post it without sender attribution.
 - Allow `指定時間` / `at_time` to be combined with a repeating schedule as its first delivery time.
 - Replace the type picker and `amount` field with four direct timing fields: once (`5h30m`), every X hours, every X days, or every X months.
 - Validate that each reminder has exactly one timing field.
