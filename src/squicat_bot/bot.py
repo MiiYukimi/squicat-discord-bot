@@ -11,6 +11,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from squicat_bot.cogs.reminders import ReminderCog
+from squicat_bot.cogs.voice import VoiceCog
 from squicat_bot.i18n import language_for, text
 
 LOGGER = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ class SquicatBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.add_cog(ReminderCog(self))
+        await self.add_cog(VoiceCog(self))
         if self.dev_guild_id:
             guild = discord.Object(id=self.dev_guild_id)
             self.tree.copy_global_to(guild=guild)
