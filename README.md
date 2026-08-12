@@ -62,6 +62,7 @@ For quick testing, add your test server's numeric ID to `DEV_GUILD_ID`. Otherwis
 | `/reminder` | English entry point for creating and sending reminders. |
 | `/提醒列表` / `/reminders` | Privately view reminders you created, including time until the next delivery and repeat type. |
 | `/停止提醒` / `/stop_reminder` | Stop one of your own repeating reminders using the ID from the list. |
+| `/代發` / `/say` | The Bot application owner privately writes a message, chooses a channel, then Squicat posts it as itself with no sender attribution. |
 
 Both reminder commands open a guided four-step flow instead of showing every field in a single Slash Command:
 
@@ -72,6 +73,8 @@ Both reminder commands open a guided four-step flow instead of showing every fie
 
 Specified times use Malaysia time (UTC+8). One-time duration reminders still accept `5h30m`, `2h`, or `30m`.
 
+`/代發` and `/say` are intentionally restricted to the Discord application's owner, not to server administrators. The setup steps and confirmation are private; the selected channel receives only the message from Squicat. Mentions in the message are displayed but do not trigger notifications.
+
 ## Project layout
 
 ```text
@@ -80,6 +83,7 @@ src/squicat_bot/
 ├── bot.py            # bot lifecycle and command synchronisation
 ├── i18n.py           # Chinese / English text catalogue
 └── cogs/reminders.py # reminder command validation and preview
+└── cogs/voice.py     # owner-only no-attribution posting flow
 ```
 
 ## Security
